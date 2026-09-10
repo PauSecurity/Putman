@@ -1,0 +1,8 @@
+services:
+  api-test-server:
+    build: .
+    container_name: api-test-server
+    ports:
+      - "8080:8080"
+    environment:
+      JWT_SECRET: "super-secret-test-key"
