@@ -1,22 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
-
-let greetInputEl: HTMLInputElement | null;
-let greetMsgEl: HTMLElement | null;
-
-async function greet() {
-  if (greetMsgEl && greetInputEl) {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsgEl.textContent = await invoke("greet", {
-      name: greetInputEl.value,
-    });
-  }
-}
+declare global { interface Window { PutmanUI: any } }
 
 window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  document.querySelector("#greet-form")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
+  document.querySelector("#ping-google")?.addEventListener("click", async () => {
+
+    const basla = performance.now();
+    try {
+      window.PutmanUI.setLoading(true);
+      const sonuc = await invoke<string>("ping", { hst: "google.com", port: 80 });
+      window.PutmanUI.setResponse({
+        status: 200,
+        statusText: "OK",
+        timeMs: Math.round(performance.now() - basla),
+        sizeBytes: sonuc.length,
+        body: sonuc,
+      });
+      window.PutmanUI.setLoading(false);
+    } catch (err) {
+      window.PutmanUI.setStatus(String(err), "err");
+    }
   });
 });
