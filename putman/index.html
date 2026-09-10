@@ -1,43 +1,2107 @@
 <!doctype html>
-<html lang="en">
+<!--
+=======================================================================================
+  PUTMAN — UI KATMANI (yalnızca index.html). TS tarafı için DOM sözleşmesi
+=======================================================================================
+  Bu dosya SADECE arayüzdür. Ağ isteği atmaz, hiçbir şeyi kaydetmez.
+  Veri / kayıt / HTTP işleri senin TS tarafında. Aşağıdaki id'ler, event'ler ve
+  window.PutmanUI API'si kararlıdır; bunlara göre bağlayabilirsin.
+
+---------------------------------------------------------------------------------------
+ 1) SOL PANEL — Koleksiyonlar (klasör + istekler)
+---------------------------------------------------------------------------------------
+  #sidebar-left            Sol panel kökü
+  #btn-new-folder          "Yeni klasör" butonu (klasör oluşturur + inline isim girişi açar)
+  #btn-new-request         "Yeni istek" butonu  (seçili/son klasörün altına ekler)
+  #collection-search       Koleksiyon arama input'u (klasör + istek adına göre canlı filtre)
+  #collection-tree         <ul> ağaç kökü
+
+  Klasör : li.folder[data-folder-id]  > .folder-head > .folder-name
+                                      > ul.request-list
+  İstek  : li.request-item[data-request-id][data-folder-id][data-method]
+                                      > .method-tag + .request-name
+  Seçili istek: li.request-item.active
+  Çift tık = yeniden adlandır. Satır üstüne gelince + / çöp kutusu butonları çıkar.
+
+---------------------------------------------------------------------------------------
+ 2) ORTA PANEL — İstek
+---------------------------------------------------------------------------------------
+  #request-form            Üst satır <form> (submit = Gönder)
+  #method-select           İstek türü (GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS)
+  #url-input               İstek adresi
+  #send-btn                Gönder butonu (#send-btn-label = yazısı)
+
+  Sekmeler (#tabs > button.tab[data-tab]) ve panelleri (.tab-panel[data-panel]):
+    desc     -> #req-name (istek adı), #req-description (açıklama textarea)
+    params   -> tablo gövdesi #params-body  , #btn-add-param
+    headers  -> tablo gövdesi #headers-body , #btn-add-header
+    auth     -> #auth-type (none|bearer|basic|apikey)
+                #auth-bearer-token
+                #auth-basic-user , #auth-basic-pass
+                #auth-apikey-key , #auth-apikey-value , #auth-apikey-in (header|query)
+    body     -> radio name="body-type" (none|json|text|form|urlencoded)
+                #body-text (json/text için textarea), #btn-body-format (JSON güzelleştir)
+                #body-form-body (form/urlencoded tablo gövdesi), #btn-add-body-field
+    settings -> #setting-timeout, #setting-max-redirects,
+                #setting-follow-redirects, #setting-verify-ssl, #setting-encode-url
+
+  Key-Value satırları (params / headers / body-form) ortak yapı:
+    tr.kv-row > input.kv-enabled[type=checkbox] | input.kv-key | input.kv-value
+              | input.kv-desc | button.kv-remove
+    Son satır her zaman boştur; yazınca otomatik yeni satır açılır.
+    NOT: params <-> URL query string otomatik senkronize edilir.
+
+---------------------------------------------------------------------------------------
+ 3) SAĞ PANEL — Geçmiş
+---------------------------------------------------------------------------------------
+  #sidebar-right           Sağ panel kökü
+  #history-search          Geçmişte arama
+  #history-list            Liste kökü
+  #btn-clear-history       Geçmişi temizle
+  Öğe: li.history-item[data-history-id][data-method][data-url]
+       Tıklanınca method + url forma yazılır ve event yayılır.
+
+---------------------------------------------------------------------------------------
+ 4) FOOTER + RESPONSE
+---------------------------------------------------------------------------------------
+  #footer                  İnce araç çubuğu
+  #btn-response            Footer'ın SOLUNDAKİ "Response" tuşu (aç/kapat)
+                           Panel açıkken .is-open sınıfı -> çok şeffaf kutu görünümü
+  #status-text             Footer durum yazısı (PutmanUI.setStatus ile değişir)
+  #footer-dot              Durum noktası (busy / ok / err)
+
+  #response-panel          Orta panelin ALTINDA açılan cevap paneli (hidden = kapalı)
+  #btn-response-close      Paneli kapat        #btn-response-copy  Cevabı kopyala
+  #resp-status #resp-time #resp-size           Durum rozetleri
+  Cevap sekmeleri: button.resp-tab[data-resp-tab] = body | headers | raw
+  #response-body           Gövde (JSON otomatik pretty-print + renklendirme)
+  #response-headers        Header tablosu
+  #response-raw            Ham metin
+  Panelin üst kenarı (.response-resizer) sürüklenerek boyutlandırılır.
+
+---------------------------------------------------------------------------------------
+ 5) YAYINLANAN EVENT'LER (hepsi document üzerinde CustomEvent, veri = event.detail)
+---------------------------------------------------------------------------------------
+  putman:send              detail = PutmanUI.getRequest() çıktısının tamamı
+  putman:request-changed   detail = getRequest()  (300 ms debounce — otomatik kayıt için)
+  putman:request-selected  detail = { requestId, folderId }
+  putman:request-created   detail = { requestId, folderId, name, method }
+  putman:request-renamed   detail = { requestId, folderId, name }
+  putman:request-deleted   detail = { requestId, folderId }
+  putman:folder-created    detail = { folderId, name }
+  putman:folder-renamed    detail = { folderId, name }
+  putman:folder-deleted    detail = { folderId }
+  putman:history-selected  detail = { historyId, method, url }
+  putman:history-cleared   detail = {}
+
+  Örnek:
+    document.addEventListener("putman:send", async (e) => {
+      const req = e.detail;                     // { method, url, headers, body, ... }
+      const res = await invoke("send_request", { req });
+      window.PutmanUI.setResponse(res);         // paneli otomatik açar
+      window.PutmanUI.addHistory({ method: req.method, url: req.url, status: res.status });
+    });
+
+---------------------------------------------------------------------------------------
+ 6) window.PutmanUI — TS'ten çağıracağın fonksiyonlar
+---------------------------------------------------------------------------------------
+  getRequest()   -> {
+                      requestId, folderId, name, description, method, url,
+                      params:  [{ enabled, key, value, description }],
+                      headers: [{ enabled, key, value, description }],
+                      auth:    { type, token, username, password, key, value, in },
+                      body:    { type, text, fields: [...] },
+                      settings:{ timeoutMs, maxRedirects, followRedirects,
+                                 verifySsl, encodeUrl }
+                    }
+  setRequest(obj)              Yukarıdaki şekli forma yazar (eksik alanlar varsayılana döner)
+  clearRequest()               Formu boşaltır
+
+  setResponse(res)             res = { status, statusText, timeMs, sizeBytes,
+                                       body, headers: {} | [{key,value}], raw? }
+                               -> paneli doldurur ve açar
+  setLoading(bool)             Gönder butonu kilidi + "Cevap bekleniyor…" durumu
+  openResponse() / closeResponse() / toggleResponse()
+
+  setCollections([{ id, name, open?, requests: [{ id, name, method }] }])
+  addFolder({ id?, name })                     -> folderId döner
+  addRequest({ id?, folderId?, name, method }) -> requestId döner
+  removeFolder(folderId) / removeRequest(requestId)
+  selectRequest(requestId)
+  clearCollections()
+
+  setHistory([{ id?, method, url, status?, timeMs?, at? }])
+  addHistory({ id?, method, url, status?, timeMs?, at? })  -> historyId döner
+  clearHistory()
+
+  setStatus(text, kind?)       kind: "busy" | "ok" | "err"
+  toast(text)                  Kısa bildirim
+
+  Kısayollar: Ctrl/Cmd+Enter = gönder, Ctrl/Cmd+L = adres çubuğu, Esc = cevabı kapat
+
+  NOT: Ağaçtaki ve geçmişteki kayıtlar DEMO içeriktir (script'in en altında).
+       Kendi verini bağlarken önce clearCollections() / clearHistory() çağır.
+=======================================================================================
+-->
+<html lang="tr">
   <head>
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <title>Putman</title>
     <script type="module" src="/src/main.ts" defer></script>
+
+    <style>
+      /* ---------- tema ---------- */
+      :root {
+        --bg:          #1b1e23;
+        --panel:       #22262c;
+        --panel-2:     #262b32;
+        --elevated:    #2d333b;
+        --border:      #343a43;
+        --border-soft: #2b3038;
+        --text:        #d8dbe1;
+        --text-dim:    #98a0ac;
+        --text-faint:  #6d7683;
+        --blue:        #5b8def;
+        --blue-dim:    #4a76c9;
+        --blue-soft:   rgba(91, 141, 239, 0.14);
+        --blue-softer: rgba(91, 141, 239, 0.07);
+        --green:       #4bb87d;
+        --amber:       #d9a441;
+        --red:         #e0655b;
+        --radius:      6px;
+        --row:         30px;
+        --mono: "JetBrains Mono", "Cascadia Mono", Consolas, "SF Mono", monospace;
+        --sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; }
+
+      html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        font-size: 13px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+      }
+
+      input, textarea, select, button {
+        font-family: inherit;
+        font-size: 13px;
+        color: var(--text);
+        border-radius: var(--radius);
+        outline: none;
+        box-shadow: none;
+      }
+      input, textarea { user-select: text; }
+      button { cursor: pointer; }
+
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb {
+        background: #3a414b;
+        border-radius: 6px;
+        border: 3px solid transparent;
+        background-clip: content-box;
+      }
+      ::-webkit-scrollbar-thumb:hover { background: #4a525e; background-clip: content-box; }
+
+      .icon {
+        width: 14px; height: 14px;
+        fill: none; stroke: currentColor;
+        stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+      }
+      .spacer { flex: 1 1 auto; }
+      [hidden] { display: none !important; }
+
+      /* ---------- iskelet ---------- */
+      .app { height: 100vh; display: grid; grid-template-rows: 1fr auto; }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: 248px minmax(420px, 1fr) 272px;
+        min-height: 0;
+        background: var(--bg);
+      }
+
+      .panel {
+        background: var(--panel);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+      }
+      .panel-left  { border-right: 1px solid var(--border); }
+      .panel-right { border-left: 1px solid var(--border); }
+
+      .panel-head {
+        height: 36px;
+        flex: 0 0 36px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 6px 0 12px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .panel-title {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+      }
+
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        height: 24px;
+        min-width: 24px;
+        padding: 0 5px;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--text-dim);
+      }
+      .icon-btn:hover { background: var(--elevated); color: var(--text); }
+      .icon-btn:active { background: #343b45; }
+      .icon-btn.tiny { height: 20px; min-width: 20px; padding: 0 3px; }
+      .icon-btn.tiny .icon { width: 12px; height: 12px; }
+
+      .panel-search { padding: 7px 10px; border-bottom: 1px solid var(--border-soft); }
+      .search-wrap {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 26px;
+        padding: 0 8px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .search-wrap:focus-within { border-color: var(--blue-dim); }
+      .search-wrap .icon { width: 12px; height: 12px; color: var(--text-faint); flex: 0 0 auto; }
+      .search-wrap input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 100%;
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: var(--text);
+      }
+      .search-wrap input::placeholder { color: var(--text-faint); }
+
+      /* ---------- sol: koleksiyon ağacı ---------- */
+      .tree {
+        list-style: none;
+        margin: 0;
+        padding: 6px 0 24px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        flex: 1 1 auto;
+      }
+      .request-list { list-style: none; margin: 0; padding: 0; }
+
+      .folder > .folder-head,
+      .request-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: var(--row);
+        padding: 0 8px 0 10px;
+        cursor: pointer;
+        border-left: 2px solid transparent;
+        white-space: nowrap;
+      }
+      .folder > .folder-head:hover,
+      .request-item:hover { background: var(--panel-2); }
+
+      .caret {
+        display: inline-flex;
+        flex: 0 0 12px;
+        color: var(--text-faint);
+        transition: transform 0.12s ease;
+      }
+      .folder.is-open > .folder-head .caret { transform: rotate(90deg); }
+      .folder:not(.is-open) > .request-list { display: none; }
+
+      .folder-icon { color: var(--blue-dim); display: inline-flex; flex: 0 0 auto; }
+      .folder-name, .request-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .folder-name { font-weight: 500; }
+      .request-item { padding-left: 30px; color: var(--text-dim); }
+      .request-item.active {
+        background: var(--blue-soft);
+        border-left-color: var(--blue);
+        color: var(--text);
+      }
+
+      .method-tag {
+        flex: 0 0 auto;
+        width: 38px;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-align: right;
+        color: var(--text-faint);
+      }
+      [data-method="GET"]     .method-tag, .m-GET     { color: #4bb87d; }
+      [data-method="POST"]    .method-tag, .m-POST    { color: #d9a441; }
+      [data-method="PUT"]     .method-tag, .m-PUT     { color: #5b8def; }
+      [data-method="PATCH"]   .method-tag, .m-PATCH   { color: #a97bd6; }
+      [data-method="DELETE"]  .method-tag, .m-DELETE  { color: #e0655b; }
+      [data-method="HEAD"]    .method-tag, .m-HEAD    { color: #7f8b99; }
+      [data-method="OPTIONS"] .method-tag, .m-OPTIONS { color: #7f8b99; }
+
+      .row-actions { display: none; align-items: center; gap: 1px; flex: 0 0 auto; }
+      .folder-head:hover .row-actions,
+      .request-item:hover .row-actions { display: flex; }
+
+      .name-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 22px;
+        padding: 0 6px;
+        background: var(--bg);
+        border: 1px solid var(--blue-dim);
+        color: var(--text);
+      }
+
+      .tree-empty {
+        padding: 18px 14px;
+        color: var(--text-faint);
+        font-size: 12px;
+        line-height: 1.6;
+        text-align: center;
+      }
+
+      /* ---------- orta panel ---------- */
+      .col-mid {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        background: var(--bg);
+      }
+
+      .urlbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        background: var(--panel);
+      }
+
+      .method-select {
+        flex: 0 0 auto;
+        height: 32px;
+        padding: 0 26px 0 10px;
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 700;
+        background-color: var(--elevated);
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2398a0ac' stroke-width='3' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        border: 1px solid var(--border);
+        appearance: none;
+        -webkit-appearance: none;
+      }
+      .method-select:hover { border-color: #414954; }
+      .method-select:focus { border-color: var(--blue-dim); }
+      .method-select option { background: var(--elevated); color: var(--text); font-weight: 600; }
+
+      .url-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 32px;
+        padding: 0 12px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        background: var(--elevated);
+        border: 1px solid var(--border);
+      }
+      .url-input::placeholder { color: var(--text-faint); font-family: var(--sans); }
+      .url-input:focus { border-color: var(--blue-dim); background: #303740; }
+
+      .send-btn {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 32px;
+        padding: 0 18px;
+        font-weight: 600;
+        color: #fff;
+        background: var(--blue-dim);
+        border: 1px solid #557ec9;
+      }
+      .send-btn:hover { background: var(--blue); }
+      .send-btn:active { background: #3f68b3; }
+      .send-btn:disabled { opacity: 0.55; cursor: default; }
+
+      /* sekmeler */
+      .tabs {
+        display: flex;
+        align-items: stretch;
+        gap: 2px;
+        padding: 0 10px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab {
+        position: relative;
+        height: 34px;
+        padding: 0 12px;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        color: var(--text-dim);
+        white-space: nowrap;
+      }
+      .tab:hover, .tab.active { color: var(--text); }
+      .tab.active::after {
+        content: "";
+        position: absolute;
+        left: 8px; right: 8px; bottom: -1px;
+        height: 2px;
+        background: var(--blue);
+        border-radius: 2px 2px 0 0;
+      }
+      .badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 5px;
+        font-size: 10px;
+        font-weight: 600;
+        line-height: 15px;
+        color: var(--blue);
+        background: var(--blue-soft);
+        border-radius: 8px;
+      }
+      .badge:empty { display: none; }
+
+      .tab-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding: 14px 16px 24px;
+      }
+      .tab-panel { min-height: 100%; }
+
+      .field { margin-bottom: 14px; }
+      .field-label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+      }
+      .text-input, .textarea, .select {
+        width: 100%;
+        padding: 7px 10px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .text-input:focus, .textarea:focus, .select:focus { border-color: var(--blue-dim); }
+      .textarea {
+        resize: vertical;
+        min-height: 90px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.55;
+      }
+      .select {
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2398a0ac' stroke-width='3' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 28px;
+      }
+      .select option { background: var(--panel); }
+      .hint { margin: 6px 0 0; font-size: 11.5px; color: var(--text-faint); }
+
+      .section-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .section-title {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+      }
+      .btn-ghost {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 24px;
+        padding: 0 9px;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+      }
+      .btn-ghost:hover { background: var(--elevated); color: var(--text); border-color: #414954; }
+
+      /* key-value tablosu */
+      .kv-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .kv-table th {
+        padding: 0 8px 6px;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        text-align: left;
+      }
+      .kv-table td { padding: 0; border: 1px solid var(--border-soft); background: var(--panel); }
+      .kv-table tr td:first-child { width: 34px; text-align: center; }
+      .kv-table tr td:last-child { width: 30px; text-align: center; }
+      .kv-col-desc { width: 32%; }
+      .kv-table input[type="text"] {
+        width: 100%;
+        height: 30px;
+        padding: 0 9px;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--text);
+      }
+      .kv-table input[type="text"]::placeholder { color: var(--text-faint); font-family: var(--sans); }
+      .kv-table input[type="text"]:focus {
+        background: var(--elevated);
+        box-shadow: inset 0 0 0 1px var(--blue-dim);
+      }
+      .kv-row.off input.kv-key,
+      .kv-row.off input.kv-value,
+      .kv-row.off input.kv-desc { opacity: 0.4; }
+      input[type="checkbox"] { accent-color: var(--blue); width: 13px; height: 13px; cursor: pointer; }
+      .kv-remove {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: 0;
+        color: var(--text-faint);
+      }
+      .kv-remove:hover { color: var(--red); background: var(--elevated); }
+
+      .radio-row { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+      .radio { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); cursor: pointer; }
+      .radio input { accent-color: var(--blue); }
+      .radio:hover { color: var(--text); }
+
+      .switch-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .switch-row:last-child { border-bottom: 0; }
+      .switch-row label { flex: 1 1 auto; cursor: pointer; }
+      .switch-row .sub { display: block; font-size: 11.5px; color: var(--text-faint); }
+      .switch-row input[type="number"] {
+        width: 110px;
+        height: 28px;
+        padding: 0 9px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-family: var(--mono);
+      }
+      .switch-row input[type="number"]:focus { border-color: var(--blue-dim); }
+
+      /* ---------- response paneli (orta panelin altı) ---------- */
+      .response-panel {
+        flex: 0 0 auto;
+        height: 300px;
+        min-height: 120px;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border-top: 1px solid var(--border);
+      }
+      .response-resizer { height: 5px; margin-top: -3px; cursor: ns-resize; flex: 0 0 auto; }
+      .response-resizer:hover { background: var(--blue-softer); }
+
+      .response-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        flex: 0 0 32px;
+        padding: 0 8px 0 12px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .resp-label {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 1px 7px;
+        border-radius: 10px;
+        background: var(--elevated);
+        color: var(--text-dim);
+      }
+      .chip.ok   { color: var(--green); background: rgba(75, 184, 125, 0.12); }
+      .chip.info { color: var(--blue);  background: var(--blue-soft); }
+      .chip.warn { color: var(--amber); background: rgba(217, 164, 65, 0.12); }
+      .chip.err  { color: var(--red);   background: rgba(224, 101, 91, 0.12); }
+
+      .resp-tabs { display: flex; gap: 2px; margin-left: 6px; }
+      .resp-tab {
+        height: 22px;
+        padding: 0 9px;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--text-faint);
+        font-size: 12px;
+      }
+      .resp-tab:hover { color: var(--text); }
+      .resp-tab.active { color: var(--text); background: var(--elevated); border-color: var(--border); }
+
+      .response-body { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--bg); }
+      .resp-view {
+        margin: 0;
+        padding: 12px 14px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+        user-select: text;
+        color: var(--text);
+      }
+      .resp-empty { padding: 22px 14px; color: var(--text-faint); font-family: var(--sans); }
+      .resp-headers-table { width: 100%; border-collapse: collapse; user-select: text; }
+      .resp-headers-table td {
+        padding: 5px 14px;
+        border-bottom: 1px solid var(--border-soft);
+        font-family: var(--mono);
+        font-size: 12px;
+        vertical-align: top;
+      }
+      .resp-headers-table td:first-child { width: 34%; color: var(--blue); white-space: nowrap; }
+
+      .j-key  { color: #7fb3ff; }
+      .j-str  { color: #9ecf8a; }
+      .j-num  { color: #d9a441; }
+      .j-bool { color: #c58af0; }
+      .j-null { color: #e0655b; }
+
+      /* ---------- sağ: geçmiş ---------- */
+      .history-list { list-style: none; margin: 0; padding: 4px 0 24px; overflow-y: auto; flex: 1 1 auto; }
+      .history-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px 6px 10px;
+        cursor: pointer;
+        border-left: 2px solid transparent;
+      }
+      .history-item:hover { background: var(--panel-2); }
+      .history-item.active { background: var(--blue-soft); border-left-color: var(--blue); }
+      .history-main { flex: 1 1 auto; min-width: 0; }
+      .history-url {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+      }
+      .history-meta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 2px;
+        font-size: 10.5px;
+        color: var(--text-faint);
+      }
+      .history-status { font-family: var(--mono); }
+      .history-status.ok   { color: var(--green); }
+      .history-status.info { color: var(--blue); }
+      .history-status.warn { color: var(--amber); }
+      .history-status.err  { color: var(--red); }
+
+      /* ---------- footer ---------- */
+      .statusbar {
+        height: 26px;
+        flex: 0 0 26px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        background: var(--panel);
+        border-top: 1px solid var(--border);
+        font-size: 11.5px;
+        color: var(--text-dim);
+      }
+      .footer-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 20px;
+        padding: 0 9px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        color: var(--text-dim);
+        font-size: 11.5px;
+      }
+      .footer-btn:hover { background: var(--elevated); color: var(--text); }
+      /* panel açıkken: çok şeffaf kutu */
+      .footer-btn.is-open {
+        background: rgba(91, 141, 239, 0.1);
+        border-color: rgba(91, 141, 239, 0.28);
+        color: var(--text);
+      }
+      .footer-btn .icon { width: 12px; height: 12px; transition: transform 0.15s ease; }
+      .footer-btn.is-open .icon { transform: rotate(180deg); }
+      .footer-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+      .footer-dot.busy { background: var(--blue); }
+      .footer-dot.ok   { background: var(--green); }
+      .footer-dot.err  { background: var(--red); }
+      .footer-sep { width: 1px; height: 13px; background: var(--border); margin: 0 3px; }
+
+      /* ---------- toast ---------- */
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 42px;
+        transform: translateX(-50%) translateY(8px);
+        padding: 7px 14px;
+        background: var(--elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        font-size: 12px;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.16s ease, transform 0.16s ease;
+        z-index: 50;
+      }
+      .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
   </head>
 
   <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
+    <!-- ikon seti -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+        <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><path d="M12 11v6M9 14h6" /></symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></symbol>
+        <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" /></symbol>
+        <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6" /></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.2-4.2" /></symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></symbol>
+        <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></symbol>
+        <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4z" /></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></symbol>
+      </defs>
+    </svg>
 
-      <div class="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/src/assets/vite.svg" class="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img
-            src="/src/assets/tauri.svg"
-            class="logo tauri"
-            alt="Tauri logo"
-          />
-        </a>
-        <a href="https://www.typescriptlang.org/docs" target="_blank">
-          <img
-            src="/src/assets/typescript.svg"
-            class="logo typescript"
-            alt="typescript logo"
-          />
-        </a>
+    <div class="app">
+      <div class="workspace">
+        <!-- ================= SOL: KOLEKSİYONLAR ================= -->
+        <aside class="panel panel-left" id="sidebar-left">
+          <div class="panel-head">
+            <span class="panel-title">Koleksiyonlar</span>
+            <span class="spacer"></span>
+            <button type="button" class="icon-btn" id="btn-new-folder" title="Yeni klasör">
+              <svg class="icon"><use href="#i-folder-plus" /></svg>
+            </button>
+            <button type="button" class="icon-btn" id="btn-new-request" title="Yeni istek">
+              <svg class="icon"><use href="#i-plus" /></svg>
+            </button>
+          </div>
+
+          <div class="panel-search">
+            <div class="search-wrap">
+              <svg class="icon"><use href="#i-search" /></svg>
+              <input type="text" id="collection-search" placeholder="Klasör / istek ara" autocomplete="off" />
+            </div>
+          </div>
+
+          <ul class="tree" id="collection-tree"></ul>
+        </aside>
+
+        <!-- ================= ORTA: İSTEK ================= -->
+        <section class="col-mid" id="center-panel">
+          <form class="urlbar" id="request-form" autocomplete="off">
+            <select class="method-select m-GET" id="method-select" title="İstek türü">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+              <option value="HEAD">HEAD</option>
+              <option value="OPTIONS">OPTIONS</option>
+            </select>
+            <input
+              type="text"
+              class="url-input"
+              id="url-input"
+              spellcheck="false"
+              placeholder="https://api.ornek.com/v1/kullanicilar"
+            />
+            <button type="submit" class="send-btn" id="send-btn">
+              <svg class="icon"><use href="#i-send" /></svg>
+              <span id="send-btn-label">Gönder</span>
+            </button>
+          </form>
+
+          <nav class="tabs" id="tabs">
+            <button type="button" class="tab active" data-tab="desc">Açıklama</button>
+            <button type="button" class="tab" data-tab="params">Parametre<span class="badge" id="badge-params"></span></button>
+            <button type="button" class="tab" data-tab="headers">Headers<span class="badge" id="badge-headers"></span></button>
+            <button type="button" class="tab" data-tab="auth">Authorization<span class="badge" id="badge-auth"></span></button>
+            <button type="button" class="tab" data-tab="body">Body<span class="badge" id="badge-body"></span></button>
+            <button type="button" class="tab" data-tab="settings">Ayarlar</button>
+          </nav>
+
+          <div class="tab-body" id="tab-body">
+            <!-- Açıklama -->
+            <div class="tab-panel" data-panel="desc">
+              <div class="field">
+                <label class="field-label" for="req-name">İstek adı</label>
+                <input type="text" class="text-input" id="req-name" placeholder="Adsız istek" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="req-description">Açıklama</label>
+                <textarea
+                  class="textarea"
+                  id="req-description"
+                  rows="8"
+                  spellcheck="false"
+                  placeholder="Bu isteğin ne yaptığını buraya yazabilirsin."
+                ></textarea>
+              </div>
+            </div>
+
+            <!-- Parametre -->
+            <div class="tab-panel" data-panel="params" hidden>
+              <div class="section-bar">
+                <span class="section-title">Query parametreleri</span>
+                <span class="spacer"></span>
+                <button type="button" class="btn-ghost" id="btn-add-param">
+                  <svg class="icon"><use href="#i-plus" /></svg> Satır ekle
+                </button>
+              </div>
+              <table class="kv-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Anahtar</th>
+                    <th>Değer</th>
+                    <th class="kv-col-desc">Açıklama</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="params-body"></tbody>
+              </table>
+              <p class="hint">Buradaki satırlar adres çubuğundaki query string ile karşılıklı senkronize edilir.</p>
+            </div>
+
+            <!-- Headers -->
+            <div class="tab-panel" data-panel="headers" hidden>
+              <div class="section-bar">
+                <span class="section-title">İstek başlıkları</span>
+                <span class="spacer"></span>
+                <button type="button" class="btn-ghost" id="btn-add-header">
+                  <svg class="icon"><use href="#i-plus" /></svg> Satır ekle
+                </button>
+              </div>
+              <table class="kv-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Anahtar</th>
+                    <th>Değer</th>
+                    <th class="kv-col-desc">Açıklama</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="headers-body"></tbody>
+              </table>
+            </div>
+
+            <!-- Authorization -->
+            <div class="tab-panel" data-panel="auth" hidden>
+              <div class="field" style="max-width: 280px">
+                <label class="field-label" for="auth-type">Yetkilendirme türü</label>
+                <select class="select" id="auth-type">
+                  <option value="none">Yok</option>
+                  <option value="bearer">Bearer Token</option>
+                  <option value="basic">Basic Auth</option>
+                  <option value="apikey">API Key</option>
+                </select>
+              </div>
+
+              <div class="auth-pane" data-auth="none">
+                <p class="hint">Bu istek için yetkilendirme kullanılmıyor.</p>
+              </div>
+
+              <div class="auth-pane" data-auth="bearer" hidden>
+                <div class="field">
+                  <label class="field-label" for="auth-bearer-token">Token</label>
+                  <input type="text" class="text-input" id="auth-bearer-token" spellcheck="false" placeholder="eyJhbGciOi..." />
+                </div>
+                <p class="hint">Authorization: Bearer &lt;token&gt; olarak gönderilir.</p>
+              </div>
+
+              <div class="auth-pane" data-auth="basic" hidden>
+                <div class="field" style="max-width: 340px">
+                  <label class="field-label" for="auth-basic-user">Kullanıcı adı</label>
+                  <input type="text" class="text-input" id="auth-basic-user" spellcheck="false" />
+                </div>
+                <div class="field" style="max-width: 340px">
+                  <label class="field-label" for="auth-basic-pass">Parola</label>
+                  <input type="password" class="text-input" id="auth-basic-pass" />
+                </div>
+              </div>
+
+              <div class="auth-pane" data-auth="apikey" hidden>
+                <div class="field" style="max-width: 340px">
+                  <label class="field-label" for="auth-apikey-key">Anahtar</label>
+                  <input type="text" class="text-input" id="auth-apikey-key" spellcheck="false" placeholder="X-API-Key" />
+                </div>
+                <div class="field" style="max-width: 340px">
+                  <label class="field-label" for="auth-apikey-value">Değer</label>
+                  <input type="text" class="text-input" id="auth-apikey-value" spellcheck="false" />
+                </div>
+                <div class="field" style="max-width: 280px">
+                  <label class="field-label" for="auth-apikey-in">Gönderim yeri</label>
+                  <select class="select" id="auth-apikey-in">
+                    <option value="header">Header</option>
+                    <option value="query">Query parametresi</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Body -->
+            <div class="tab-panel" data-panel="body" hidden>
+              <div class="radio-row" id="body-type">
+                <label class="radio"><input type="radio" name="body-type" value="none" checked /> Yok</label>
+                <label class="radio"><input type="radio" name="body-type" value="json" /> JSON</label>
+                <label class="radio"><input type="radio" name="body-type" value="text" /> Düz metin</label>
+                <label class="radio"><input type="radio" name="body-type" value="form" /> Form-data</label>
+                <label class="radio"><input type="radio" name="body-type" value="urlencoded" /> x-www-form-urlencoded</label>
+              </div>
+
+              <div class="body-pane" data-body="none">
+                <p class="hint">Bu istek gövdesiz gönderilir.</p>
+              </div>
+
+              <div class="body-pane" data-body="text" hidden>
+                <div class="section-bar">
+                  <span class="section-title" id="body-text-title">Gövde</span>
+                  <span class="spacer"></span>
+                  <button type="button" class="btn-ghost" id="btn-body-format" hidden>JSON düzenle</button>
+                </div>
+                <textarea class="textarea" id="body-text" rows="14" spellcheck="false" placeholder='{ "ad": "değer" }'></textarea>
+              </div>
+
+              <div class="body-pane" data-body="fields" hidden>
+                <div class="section-bar">
+                  <span class="section-title">Alanlar</span>
+                  <span class="spacer"></span>
+                  <button type="button" class="btn-ghost" id="btn-add-body-field">
+                    <svg class="icon"><use href="#i-plus" /></svg> Satır ekle
+                  </button>
+                </div>
+                <table class="kv-table">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>Anahtar</th>
+                      <th>Değer</th>
+                      <th class="kv-col-desc">Açıklama</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="body-form-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Ayarlar -->
+            <div class="tab-panel" data-panel="settings" hidden>
+              <div class="switch-row">
+                <label for="setting-timeout">
+                  Zaman aşımı (ms)
+                  <span class="sub">0 = sınırsız bekle</span>
+                </label>
+                <input type="number" id="setting-timeout" min="0" step="500" value="30000" />
+              </div>
+              <div class="switch-row">
+                <label for="setting-max-redirects">
+                  Azami yönlendirme
+                  <span class="sub">Takip edilecek redirect sayısı</span>
+                </label>
+                <input type="number" id="setting-max-redirects" min="0" max="50" value="10" />
+              </div>
+              <div class="switch-row">
+                <input type="checkbox" id="setting-follow-redirects" checked />
+                <label for="setting-follow-redirects">
+                  Yönlendirmeleri takip et
+                  <span class="sub">3xx cevaplarında yeni adrese git</span>
+                </label>
+              </div>
+              <div class="switch-row">
+                <input type="checkbox" id="setting-verify-ssl" checked />
+                <label for="setting-verify-ssl">
+                  SSL sertifikasını doğrula
+                  <span class="sub">Kapatırsan geçersiz sertifikalar da kabul edilir</span>
+                </label>
+              </div>
+              <div class="switch-row">
+                <input type="checkbox" id="setting-encode-url" checked />
+                <label for="setting-encode-url">
+                  URL'yi otomatik kodla
+                  <span class="sub">Parametrelerdeki özel karakterleri encode et</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- ---------- RESPONSE (orta panelin altı) ---------- -->
+          <section class="response-panel" id="response-panel" hidden>
+            <div class="response-resizer" id="response-resizer" title="Sürükleyerek boyutlandır"></div>
+            <div class="response-head">
+              <span class="resp-label">Response</span>
+              <span class="chip" id="resp-status">—</span>
+              <span class="chip" id="resp-time">—</span>
+              <span class="chip" id="resp-size">—</span>
+              <div class="resp-tabs">
+                <button type="button" class="resp-tab active" data-resp-tab="body">Gövde</button>
+                <button type="button" class="resp-tab" data-resp-tab="headers">Headers</button>
+                <button type="button" class="resp-tab" data-resp-tab="raw">Ham</button>
+              </div>
+              <span class="spacer"></span>
+              <button type="button" class="icon-btn tiny" id="btn-response-copy" title="Kopyala">
+                <svg class="icon"><use href="#i-copy" /></svg>
+              </button>
+              <button type="button" class="icon-btn tiny" id="btn-response-close" title="Kapat">
+                <svg class="icon"><use href="#i-x" /></svg>
+              </button>
+            </div>
+            <div class="response-body">
+              <pre class="resp-view" id="response-body"><span class="resp-empty">Henüz bir cevap yok.</span></pre>
+              <div class="resp-view" id="response-headers" hidden style="padding: 0"></div>
+              <pre class="resp-view" id="response-raw" hidden></pre>
+            </div>
+          </section>
+        </section>
+
+        <!-- ================= SAĞ: GEÇMİŞ ================= -->
+        <aside class="panel panel-right" id="sidebar-right">
+          <div class="panel-head">
+            <span class="panel-title">Geçmiş</span>
+            <span class="spacer"></span>
+            <button type="button" class="icon-btn" id="btn-clear-history" title="Geçmişi temizle">
+              <svg class="icon"><use href="#i-trash" /></svg>
+            </button>
+          </div>
+          <div class="panel-search">
+            <div class="search-wrap">
+              <svg class="icon"><use href="#i-search" /></svg>
+              <input type="text" id="history-search" placeholder="Geçmişte ara" autocomplete="off" />
+            </div>
+          </div>
+          <ul class="history-list" id="history-list"></ul>
+        </aside>
       </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-    </main>
+      <!-- ================= FOOTER ================= -->
+      <footer class="statusbar" id="footer">
+        <button type="button" class="footer-btn" id="btn-response" title="Cevap panelini aç / kapat">
+          <svg class="icon"><use href="#i-chevron-up" /></svg>
+          <span>Response</span>
+        </button>
+        <div class="footer-sep"></div>
+        <span class="footer-dot" id="footer-dot"></span>
+        <span id="status-text">Hazır</span>
+        <span class="spacer"></span>
+        <button type="button" class="footer-btn" id="ping-google" title="Google'a ping atar.">
+          <span>Ping</span>
+        </button>
+        <span id="footer-info">Putman</span>
+      </footer>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      (function () {
+        "use strict";
+
+        var $ = function (s, r) { return (r || document).querySelector(s); };
+        var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+        var uid = function (p) { return p + "_" + Math.random().toString(36).slice(2, 9); };
+
+        function emit(name, detail) {
+          document.dispatchEvent(new CustomEvent(name, { detail: detail || {} }));
+        }
+
+        /* ---------------------------------------------------------------- *
+         *  key-value tabloları
+         * ---------------------------------------------------------------- */
+        function makeRow(item) {
+          item = item || {};
+          var tr = document.createElement("tr");
+          tr.className = "kv-row";
+          if (item.enabled === false) tr.classList.add("off");
+          tr.innerHTML =
+            '<td><input type="checkbox" class="kv-enabled" ' + (item.enabled === false ? "" : "checked") + " /></td>" +
+            '<td><input type="text" class="kv-key" placeholder="anahtar" spellcheck="false" /></td>' +
+            '<td><input type="text" class="kv-value" placeholder="değer" spellcheck="false" /></td>' +
+            '<td><input type="text" class="kv-desc" placeholder="açıklama" spellcheck="false" /></td>' +
+            '<td><button type="button" class="kv-remove" title="Satırı sil">' +
+            '<svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></td>';
+          $(".kv-key", tr).value = item.key || "";
+          $(".kv-value", tr).value = item.value || "";
+          $(".kv-desc", tr).value = item.description || "";
+          return tr;
+        }
+
+        function ensureTrailing(tbody) {
+          var rows = $$(".kv-row", tbody);
+          var last = rows[rows.length - 1];
+          if (!last || $(".kv-key", last).value.trim() || $(".kv-value", last).value.trim()) {
+            tbody.appendChild(makeRow({}));
+          }
+        }
+
+        function readKv(tbody) {
+          return $$(".kv-row", tbody)
+            .map(function (tr) {
+              return {
+                enabled: $(".kv-enabled", tr).checked,
+                key: $(".kv-key", tr).value.trim(),
+                value: $(".kv-value", tr).value,
+                description: $(".kv-desc", tr).value.trim()
+              };
+            })
+            .filter(function (r) { return r.key || (r.value && r.value.trim()); });
+        }
+
+        function writeKv(tbody, items) {
+          tbody.innerHTML = "";
+          (items || []).forEach(function (it) { tbody.appendChild(makeRow(it)); });
+          ensureTrailing(tbody);
+        }
+
+        var paramsBody = $("#params-body");
+        var headersBody = $("#headers-body");
+        var bodyFormTb = $("#body-form-body");
+        [paramsBody, headersBody, bodyFormTb].forEach(function (tb) { writeKv(tb, []); });
+
+        function wireKv(tbody, onChange) {
+          tbody.addEventListener("input", function (e) {
+            var c = e.target.classList;
+            if (c.contains("kv-key") || c.contains("kv-value") || c.contains("kv-desc")) {
+              ensureTrailing(tbody);
+              onChange();
+            }
+          });
+          tbody.addEventListener("change", function (e) {
+            if (e.target.classList.contains("kv-enabled")) {
+              e.target.closest(".kv-row").classList.toggle("off", !e.target.checked);
+              onChange();
+            }
+          });
+          tbody.addEventListener("click", function (e) {
+            var btn = e.target.closest(".kv-remove");
+            if (!btn) return;
+            btn.closest(".kv-row").remove();
+            ensureTrailing(tbody);
+            onChange();
+          });
+        }
+
+        /* ---------------------------------------------------------------- *
+         *  URL <-> parametre senkronu
+         * ---------------------------------------------------------------- */
+        var urlInput = $("#url-input");
+        var syncing = false;
+
+        function paramsToUrl() {
+          if (syncing) return;
+          syncing = true;
+          var base = urlInput.value.split("?")[0];
+          var qs = readKv(paramsBody)
+            .filter(function (p) { return p.enabled && p.key; })
+            .map(function (p) { return p.key + "=" + p.value; })
+            .join("&");
+          urlInput.value = qs ? base + "?" + qs : base;
+          syncing = false;
+        }
+
+        function urlToParams() {
+          if (syncing) return;
+          syncing = true;
+          var raw = urlInput.value;
+          var qi = raw.indexOf("?");
+          if (qi > -1) {
+            var descs = {};
+            readKv(paramsBody).forEach(function (p) { if (p.description) descs[p.key] = p.description; });
+            var items = raw
+              .slice(qi + 1)
+              .split("&")
+              .filter(Boolean)
+              .map(function (pair) {
+                var i = pair.indexOf("=");
+                var k = i > -1 ? pair.slice(0, i) : pair;
+                var v = i > -1 ? pair.slice(i + 1) : "";
+                return { enabled: true, key: k, value: v, description: descs[k] || "" };
+              });
+            writeKv(paramsBody, items);
+          }
+          syncing = false;
+          updateBadges();
+        }
+
+        /* ---------------------------------------------------------------- *
+         *  sekmeler + rozetler
+         * ---------------------------------------------------------------- */
+        function setTab(name) {
+          $$("#tabs .tab").forEach(function (b) { b.classList.toggle("active", b.dataset.tab === name); });
+          $$(".tab-panel").forEach(function (p) { p.hidden = p.dataset.panel !== name; });
+        }
+        $("#tabs").addEventListener("click", function (e) {
+          var b = e.target.closest(".tab");
+          if (b) setTab(b.dataset.tab);
+        });
+
+        function updateBadges() {
+          var np = readKv(paramsBody).filter(function (p) { return p.enabled; }).length;
+          var nh = readKv(headersBody).filter(function (p) { return p.enabled; }).length;
+          $("#badge-params").textContent = np > 0 ? String(np) : "";
+          $("#badge-headers").textContent = nh > 0 ? String(nh) : "";
+          $("#badge-auth").textContent = $("#auth-type").value === "none" ? "" : "•";
+          $("#badge-body").textContent = bodyType() === "none" ? "" : "•";
+        }
+
+        /* ---------------------------------------------------------------- *
+         *  authorization / body geçişleri
+         * ---------------------------------------------------------------- */
+        var authType = $("#auth-type");
+        function applyAuthType() {
+          var v = authType.value;
+          $$(".auth-pane").forEach(function (p) { p.hidden = p.dataset.auth !== v; });
+          updateBadges();
+        }
+        authType.addEventListener("change", function () { applyAuthType(); markChanged(); });
+
+        function bodyType() {
+          var r = document.querySelector('input[name="body-type"]:checked');
+          return r ? r.value : "none";
+        }
+        function applyBodyType() {
+          var v = bodyType();
+          var pane = v === "none" ? "none" : v === "form" || v === "urlencoded" ? "fields" : "text";
+          $$(".body-pane").forEach(function (p) { p.hidden = p.dataset.body !== pane; });
+          $("#btn-body-format").hidden = v !== "json";
+          $("#body-text-title").textContent = v === "json" ? "JSON gövdesi" : "Gövde";
+          $("#body-text").placeholder = v === "json" ? '{ "ad": "değer" }' : "Düz metin gövdesi";
+          updateBadges();
+        }
+        $("#body-type").addEventListener("change", function () { applyBodyType(); markChanged(); });
+
+        $("#btn-body-format").addEventListener("click", function () {
+          var ta = $("#body-text");
+          try {
+            ta.value = JSON.stringify(JSON.parse(ta.value), null, 2);
+            toast("JSON biçimlendirildi");
+            markChanged();
+          } catch (err) {
+            toast("Geçersiz JSON");
+          }
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  method rengi
+         * ---------------------------------------------------------------- */
+        var methodSelect = $("#method-select");
+        function applyMethodColor() {
+          methodSelect.className = "method-select m-" + methodSelect.value;
+        }
+        methodSelect.addEventListener("change", function () {
+          applyMethodColor();
+          var act = $(".request-item.active");
+          if (act) {
+            act.dataset.method = methodSelect.value;
+            $(".method-tag", act).textContent = methodSelect.value;
+          }
+          markChanged();
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  koleksiyon ağacı
+         * ---------------------------------------------------------------- */
+        var tree = $("#collection-tree");
+        var lastFolderId = null;
+
+        function folderEl(folder) {
+          var li = document.createElement("li");
+          li.className = "folder" + (folder.open === false ? "" : " is-open");
+          li.dataset.folderId = folder.id;
+          li.innerHTML =
+            '<div class="folder-head">' +
+            '<span class="caret"><svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>' +
+            '<span class="folder-icon"><svg class="icon"><use href="#i-folder"/></svg></span>' +
+            '<span class="folder-name"></span>' +
+            '<span class="row-actions">' +
+            '<button type="button" class="icon-btn tiny act-add" title="Bu klasöre istek ekle"><svg class="icon"><use href="#i-plus"/></svg></button>' +
+            '<button type="button" class="icon-btn tiny act-del" title="Klasörü sil"><svg class="icon"><use href="#i-trash"/></svg></button>' +
+            "</span>" +
+            "</div>" +
+            '<ul class="request-list"></ul>';
+          $(".folder-name", li).textContent = folder.name || "Yeni klasör";
+          (folder.requests || []).forEach(function (r) {
+            $(".request-list", li).appendChild(requestEl(r, folder.id));
+          });
+          return li;
+        }
+
+        function requestEl(req, folderId) {
+          var li = document.createElement("li");
+          li.className = "request-item";
+          li.dataset.requestId = req.id;
+          li.dataset.folderId = folderId;
+          li.dataset.method = req.method || "GET";
+          li.innerHTML =
+            '<span class="method-tag"></span>' +
+            '<span class="request-name"></span>' +
+            '<span class="row-actions">' +
+            '<button type="button" class="icon-btn tiny act-del" title="İsteği sil"><svg class="icon"><use href="#i-trash"/></svg></button>' +
+            "</span>";
+          $(".method-tag", li).textContent = req.method || "GET";
+          $(".request-name", li).textContent = req.name || "Adsız istek";
+          return li;
+        }
+
+        function renderTreeEmptyState() {
+          var has = tree.querySelector(".folder");
+          var empty = $(".tree-empty", tree);
+          if (!has && !empty) {
+            var d = document.createElement("li");
+            d.className = "tree-empty";
+            d.textContent = "Henüz klasör yok. Yukarıdaki klasör simgesiyle yeni bir klasör oluştur.";
+            tree.appendChild(d);
+          } else if (has && empty) {
+            empty.remove();
+          }
+        }
+
+        function inlineRename(labelEl, commit) {
+          var old = labelEl.textContent;
+          var input = document.createElement("input");
+          input.type = "text";
+          input.className = "name-input";
+          input.value = old;
+          labelEl.replaceWith(input);
+          input.focus();
+          input.select();
+          var done = false;
+          function finish(save) {
+            if (done) return;
+            done = true;
+            var val = save ? input.value.trim() || old : old;
+            labelEl.textContent = val;
+            input.replaceWith(labelEl);
+            if (save && val !== old) commit(val);
+          }
+          input.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") { e.preventDefault(); finish(true); }
+            if (e.key === "Escape") { e.preventDefault(); finish(false); }
+          });
+          input.addEventListener("blur", function () { finish(true); });
+          input.addEventListener("click", function (e) { e.stopPropagation(); });
+          input.addEventListener("dblclick", function (e) { e.stopPropagation(); });
+        }
+
+        function addFolder(opts) {
+          opts = opts || {};
+          var id = opts.id || uid("f");
+          tree.appendChild(folderEl({ id: id, name: opts.name || "Yeni klasör", requests: opts.requests, open: opts.open }));
+          lastFolderId = id;
+          renderTreeEmptyState();
+          return id;
+        }
+
+        function addRequest(opts) {
+          opts = opts || {};
+          var first = tree.querySelector(".folder");
+          var folderId = opts.folderId || lastFolderId || (first ? first.dataset.folderId : null);
+          var folder = folderId ? tree.querySelector('.folder[data-folder-id="' + folderId + '"]') : null;
+          if (!folder) {
+            folderId = addFolder({ id: opts.folderId, name: "Yeni klasör" });
+            folder = tree.querySelector('.folder[data-folder-id="' + folderId + '"]');
+          }
+          folder.classList.add("is-open");
+          var id = opts.id || uid("r");
+          $(".request-list", folder).appendChild(
+            requestEl({ id: id, name: opts.name || "Adsız istek", method: opts.method || "GET" }, folderId)
+          );
+          lastFolderId = folderId;
+          return id;
+        }
+
+        function selectRequest(id) {
+          var li = tree.querySelector('.request-item[data-request-id="' + id + '"]');
+          if (!li) return;
+          $$(".request-item.active", tree).forEach(function (e) { e.classList.remove("active"); });
+          li.classList.add("active");
+          lastFolderId = li.dataset.folderId;
+          $("#req-name").value = $(".request-name", li).textContent;
+          methodSelect.value = li.dataset.method || "GET";
+          applyMethodColor();
+          emit("putman:request-selected", { requestId: id, folderId: li.dataset.folderId });
+        }
+
+        tree.addEventListener("click", function (e) {
+          var addBtn = e.target.closest(".act-add");
+          var delBtn = e.target.closest(".act-del");
+          var folder = e.target.closest(".folder");
+          var item = e.target.closest(".request-item");
+
+          if (addBtn && folder) {
+            e.stopPropagation();
+            var fid = folder.dataset.folderId;
+            var rid = addRequest({ folderId: fid, name: "Adsız istek", method: "GET" });
+            var newLi = tree.querySelector('.request-item[data-request-id="' + rid + '"]');
+            selectRequest(rid);
+            emit("putman:request-created", { requestId: rid, folderId: fid, name: "Adsız istek", method: "GET" });
+            inlineRename($(".request-name", newLi), function (val) {
+              emit("putman:request-renamed", { requestId: rid, folderId: fid, name: val });
+              if (newLi.classList.contains("active")) $("#req-name").value = val;
+            });
+            return;
+          }
+
+          if (delBtn && item) {
+            e.stopPropagation();
+            var iid = item.dataset.requestId;
+            var ifid = item.dataset.folderId;
+            item.remove();
+            emit("putman:request-deleted", { requestId: iid, folderId: ifid });
+            return;
+          }
+
+          if (delBtn && folder) {
+            e.stopPropagation();
+            var dfid = folder.dataset.folderId;
+            folder.remove();
+            if (lastFolderId === dfid) lastFolderId = null;
+            renderTreeEmptyState();
+            emit("putman:folder-deleted", { folderId: dfid });
+            return;
+          }
+
+          if (item) {
+            selectRequest(item.dataset.requestId);
+            return;
+          }
+
+          if (folder && e.target.closest(".folder-head")) {
+            folder.classList.toggle("is-open");
+            lastFolderId = folder.dataset.folderId;
+          }
+        });
+
+        tree.addEventListener("dblclick", function (e) {
+          var item = e.target.closest(".request-item");
+          if (item) {
+            inlineRename($(".request-name", item), function (val) {
+              emit("putman:request-renamed", {
+                requestId: item.dataset.requestId,
+                folderId: item.dataset.folderId,
+                name: val
+              });
+              if (item.classList.contains("active")) $("#req-name").value = val;
+            });
+            return;
+          }
+          var folder = e.target.closest(".folder");
+          if (folder && e.target.closest(".folder-head")) {
+            folder.classList.toggle("is-open"); // çift tıkta açık/kapalı durumu değişmesin
+            inlineRename($(".folder-name", folder), function (val) {
+              emit("putman:folder-renamed", { folderId: folder.dataset.folderId, name: val });
+            });
+          }
+        });
+
+        $("#btn-new-folder").addEventListener("click", function () {
+          var id = addFolder({ name: "Yeni klasör" });
+          var li = tree.querySelector('.folder[data-folder-id="' + id + '"]');
+          emit("putman:folder-created", { folderId: id, name: "Yeni klasör" });
+          inlineRename($(".folder-name", li), function (val) {
+            emit("putman:folder-renamed", { folderId: id, name: val });
+          });
+        });
+
+        $("#btn-new-request").addEventListener("click", function () {
+          var id = addRequest({ name: "Adsız istek", method: methodSelect.value });
+          var li = tree.querySelector('.request-item[data-request-id="' + id + '"]');
+          selectRequest(id);
+          emit("putman:request-created", {
+            requestId: id,
+            folderId: li.dataset.folderId,
+            name: "Adsız istek",
+            method: methodSelect.value
+          });
+          inlineRename($(".request-name", li), function (val) {
+            emit("putman:request-renamed", { requestId: id, folderId: li.dataset.folderId, name: val });
+            $("#req-name").value = val;
+          });
+        });
+
+        // istek adı değişince ağaçtaki etiket de değişsin
+        $("#req-name").addEventListener("input", function () {
+          var act = $(".request-item.active");
+          if (act) $(".request-name", act).textContent = this.value.trim() || "Adsız istek";
+        });
+
+        // sol arama
+        $("#collection-search").addEventListener("input", function () {
+          var q = this.value.trim().toLowerCase();
+          $$(".folder", tree).forEach(function (f) {
+            var fname = $(".folder-name", f).textContent.toLowerCase();
+            var folderHit = fname.indexOf(q) > -1;
+            var any = false;
+            $$(".request-item", f).forEach(function (r) {
+              var hit = !q || folderHit || $(".request-name", r).textContent.toLowerCase().indexOf(q) > -1;
+              r.hidden = !hit;
+              if (hit) any = true;
+            });
+            f.hidden = !!q && !any && !folderHit;
+            if (q && any) f.classList.add("is-open");
+          });
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  geçmiş
+         * ---------------------------------------------------------------- */
+        var historyList = $("#history-list");
+
+        function statusClass(s) {
+          if (s === null || s === undefined || s === "") return "";
+          if (s >= 200 && s < 300) return "ok";
+          if (s >= 300 && s < 400) return "info";
+          if (s >= 400 && s < 500) return "warn";
+          return "err";
+        }
+
+        function timeLabel(at) {
+          var d = at ? new Date(at) : new Date();
+          return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+        }
+
+        function historyEl(item) {
+          var li = document.createElement("li");
+          li.className = "history-item";
+          li.dataset.historyId = item.id;
+          li.dataset.method = item.method || "GET";
+          li.dataset.url = item.url || "";
+          li.innerHTML =
+            '<span class="method-tag"></span>' +
+            '<span class="history-main">' +
+            '<div class="history-url"></div>' +
+            '<div class="history-meta"><span class="history-status"></span><span class="history-when"></span></div>' +
+            "</span>";
+          $(".method-tag", li).textContent = item.method || "GET";
+          var u = $(".history-url", li);
+          u.textContent = item.url || "";
+          u.title = item.url || "";
+          var st = $(".history-status", li);
+          st.className = "history-status " + statusClass(item.status);
+          st.textContent = item.status || item.status === 0 ? String(item.status) : "—";
+          $(".history-when", li).textContent = timeLabel(item.at) + (item.timeMs ? " · " + item.timeMs + " ms" : "");
+          return li;
+        }
+
+        function addHistory(item) {
+          item = item || {};
+          item.id = item.id || uid("h");
+          historyList.insertBefore(historyEl(item), historyList.firstChild);
+          return item.id;
+        }
+
+        historyList.addEventListener("click", function (e) {
+          var li = e.target.closest(".history-item");
+          if (!li) return;
+          $$(".history-item.active", historyList).forEach(function (x) { x.classList.remove("active"); });
+          li.classList.add("active");
+          methodSelect.value = li.dataset.method || "GET";
+          applyMethodColor();
+          urlInput.value = li.dataset.url || "";
+          urlToParams();
+          emit("putman:history-selected", {
+            historyId: li.dataset.historyId,
+            method: li.dataset.method,
+            url: li.dataset.url
+          });
+        });
+
+        $("#btn-clear-history").addEventListener("click", function () {
+          historyList.innerHTML = "";
+          emit("putman:history-cleared", {});
+          toast("Geçmiş temizlendi");
+        });
+
+        $("#history-search").addEventListener("input", function () {
+          var q = this.value.trim().toLowerCase();
+          $$(".history-item", historyList).forEach(function (li) {
+            var t = (li.dataset.method + " " + li.dataset.url).toLowerCase();
+            li.hidden = !!q && t.indexOf(q) === -1;
+          });
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  response paneli
+         * ---------------------------------------------------------------- */
+        var respPanel = $("#response-panel");
+        var footerBtn = $("#btn-response");
+
+        function openResponse() {
+          respPanel.hidden = false;
+          footerBtn.classList.add("is-open");
+        }
+        function closeResponse() {
+          respPanel.hidden = true;
+          footerBtn.classList.remove("is-open");
+        }
+        function toggleResponse() {
+          if (respPanel.hidden) openResponse();
+          else closeResponse();
+        }
+
+        footerBtn.addEventListener("click", toggleResponse);
+        $("#btn-response-close").addEventListener("click", closeResponse);
+
+        $(".resp-tabs").addEventListener("click", function (e) {
+          var b = e.target.closest(".resp-tab");
+          if (!b) return;
+          $$(".resp-tab").forEach(function (x) { x.classList.toggle("active", x === b); });
+          var v = b.dataset.respTab;
+          $("#response-body").hidden = v !== "body";
+          $("#response-headers").hidden = v !== "headers";
+          $("#response-raw").hidden = v !== "raw";
+        });
+
+        $("#btn-response-copy").addEventListener("click", function () {
+          var txt = $("#response-raw").textContent || $("#response-body").textContent || "";
+          if (navigator.clipboard && txt) {
+            navigator.clipboard.writeText(txt).then(
+              function () { toast("Cevap kopyalandı"); },
+              function () { toast("Kopyalanamadı"); }
+            );
+          } else {
+            toast("Kopyalanacak cevap yok");
+          }
+        });
+
+        // panel boyutlandırma
+        (function () {
+          var handle = $("#response-resizer");
+          var dragging = false, startY = 0, startH = 0;
+          handle.addEventListener("mousedown", function (e) {
+            dragging = true;
+            startY = e.clientY;
+            startH = respPanel.offsetHeight;
+            document.body.style.cursor = "ns-resize";
+            e.preventDefault();
+          });
+          window.addEventListener("mousemove", function (e) {
+            if (!dragging) return;
+            var h = startH + (startY - e.clientY);
+            var max = $("#center-panel").offsetHeight - 140;
+            respPanel.style.height = Math.max(120, Math.min(h, max)) + "px";
+          });
+          window.addEventListener("mouseup", function () {
+            if (!dragging) return;
+            dragging = false;
+            document.body.style.cursor = "";
+          });
+        })();
+
+        function escapeHtml(s) {
+          return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        function highlightJson(text) {
+          return escapeHtml(text).replace(
+            /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
+            function (m) {
+              var cls = "j-num";
+              if (/^&quot;|^"/.test(m)) cls = /:$/.test(m) ? "j-key" : "j-str";
+              else if (/^(true|false)$/.test(m)) cls = "j-bool";
+              else if (/^null$/.test(m)) cls = "j-null";
+              return '<span class="' + cls + '">' + m + "</span>";
+            }
+          );
+        }
+
+        function formatSize(n) {
+          if (n === null || n === undefined || isNaN(n)) return "—";
+          if (n < 1024) return n + " B";
+          if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+          return (n / 1048576).toFixed(2) + " MB";
+        }
+
+        function setResponse(res) {
+          res = res || {};
+          var cls = statusClass(res.status);
+          var statusChip = $("#resp-status");
+          statusChip.className = "chip " + cls;
+          statusChip.textContent =
+            res.status || res.status === 0 ? res.status + (res.statusText ? " " + res.statusText : "") : "—";
+          $("#resp-time").textContent = res.timeMs || res.timeMs === 0 ? res.timeMs + " ms" : "—";
+          $("#resp-size").textContent = formatSize(
+            res.sizeBytes !== undefined ? res.sizeBytes : typeof res.body === "string" ? res.body.length : undefined
+          );
+
+          var bodyText =
+            typeof res.body === "string" ? res.body : res.body !== undefined ? JSON.stringify(res.body, null, 2) : "";
+          var pretty = bodyText;
+          var isJson = false;
+          try {
+            pretty = JSON.stringify(JSON.parse(bodyText), null, 2);
+            isJson = true;
+          } catch (err) {}
+
+          var bodyEl = $("#response-body");
+          if (!bodyText) bodyEl.innerHTML = '<span class="resp-empty">Boş gövde.</span>';
+          else bodyEl.innerHTML = isJson ? highlightJson(pretty) : escapeHtml(pretty);
+
+          $("#response-raw").textContent = res.raw !== undefined ? res.raw : bodyText;
+
+          var hs = res.headers || {};
+          var pairs = Array.isArray(hs)
+            ? hs.map(function (h) { return [h.key || h.name, h.value]; })
+            : Object.keys(hs).map(function (k) { return [k, hs[k]]; });
+          var hEl = $("#response-headers");
+          if (!pairs.length) {
+            hEl.innerHTML = '<div class="resp-empty">Header yok.</div>';
+          } else {
+            hEl.innerHTML =
+              '<table class="resp-headers-table"><tbody>' +
+              pairs
+                .map(function (p) {
+                  return "<tr><td>" + escapeHtml(p[0]) + "</td><td>" + escapeHtml(p[1]) + "</td></tr>";
+                })
+                .join("") +
+              "</tbody></table>";
+          }
+
+          setLoading(false);
+          setStatus(
+            (res.status || res.status === 0 ? res.status + " · " : "") +
+              (res.timeMs || res.timeMs === 0 ? res.timeMs + " ms" : "tamamlandı"),
+            cls === "ok" || cls === "info" ? "ok" : "err"
+          );
+          openResponse();
+        }
+
+        /* ---------------------------------------------------------------- *
+         *  gönder
+         * ---------------------------------------------------------------- */
+        var sendBtn = $("#send-btn");
+
+        function setLoading(on) {
+          sendBtn.disabled = !!on;
+          $("#send-btn-label").textContent = on ? "Gönderiliyor" : "Gönder";
+          if (on) {
+            $("#response-body").innerHTML = '<span class="resp-empty">Cevap bekleniyor…</span>';
+            $("#response-raw").textContent = "";
+            $("#response-headers").innerHTML = "";
+            ["#resp-status", "#resp-time", "#resp-size"].forEach(function (s) {
+              $(s).textContent = "—";
+              $(s).className = "chip";
+            });
+            setStatus("İstek gönderiliyor…", "busy");
+          }
+        }
+
+        function setStatus(text, kind) {
+          $("#status-text").textContent = text;
+          $("#footer-dot").className = "footer-dot" + (kind ? " " + kind : "");
+        }
+
+        $("#request-form").addEventListener("submit", function (e) {
+          e.preventDefault();
+          if (!urlInput.value.trim()) {
+            toast("Önce bir adres gir");
+            urlInput.focus();
+            return;
+          }
+          openResponse();
+          setLoading(true);
+          emit("putman:send", getRequest());
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  form <-> nesne
+         * ---------------------------------------------------------------- */
+        function getRequest() {
+          var act = $(".request-item.active");
+          var bt = bodyType();
+          return {
+            requestId: act ? act.dataset.requestId : null,
+            folderId: act ? act.dataset.folderId : null,
+            name: $("#req-name").value.trim(),
+            description: $("#req-description").value,
+            method: methodSelect.value,
+            url: urlInput.value.trim(),
+            params: readKv(paramsBody),
+            headers: readKv(headersBody),
+            auth: {
+              type: authType.value,
+              token: $("#auth-bearer-token").value,
+              username: $("#auth-basic-user").value,
+              password: $("#auth-basic-pass").value,
+              key: $("#auth-apikey-key").value,
+              value: $("#auth-apikey-value").value,
+              in: $("#auth-apikey-in").value
+            },
+            body: {
+              type: bt,
+              text: bt === "json" || bt === "text" ? $("#body-text").value : "",
+              fields: bt === "form" || bt === "urlencoded" ? readKv(bodyFormTb) : []
+            },
+            settings: {
+              timeoutMs: parseInt($("#setting-timeout").value, 10) || 0,
+              maxRedirects: parseInt($("#setting-max-redirects").value, 10) || 0,
+              followRedirects: $("#setting-follow-redirects").checked,
+              verifySsl: $("#setting-verify-ssl").checked,
+              encodeUrl: $("#setting-encode-url").checked
+            }
+          };
+        }
+
+        function setRequest(r) {
+          r = r || {};
+          syncing = true;
+          $("#req-name").value = r.name || "";
+          $("#req-description").value = r.description || "";
+          methodSelect.value = r.method || "GET";
+          applyMethodColor();
+          urlInput.value = r.url || "";
+          writeKv(paramsBody, r.params || []);
+          writeKv(headersBody, r.headers || []);
+
+          var a = r.auth || {};
+          authType.value = a.type || "none";
+          $("#auth-bearer-token").value = a.token || "";
+          $("#auth-basic-user").value = a.username || "";
+          $("#auth-basic-pass").value = a.password || "";
+          $("#auth-apikey-key").value = a.key || "";
+          $("#auth-apikey-value").value = a.value || "";
+          $("#auth-apikey-in").value = a.in || "header";
+          applyAuthType();
+
+          var b = r.body || {};
+          var radio = document.querySelector('input[name="body-type"][value="' + (b.type || "none") + '"]');
+          if (radio) radio.checked = true;
+          $("#body-text").value = b.text || "";
+          writeKv(bodyFormTb, b.fields || []);
+          applyBodyType();
+
+          var s = r.settings || {};
+          $("#setting-timeout").value = s.timeoutMs !== undefined ? s.timeoutMs : 30000;
+          $("#setting-max-redirects").value = s.maxRedirects !== undefined ? s.maxRedirects : 10;
+          $("#setting-follow-redirects").checked = s.followRedirects !== false;
+          $("#setting-verify-ssl").checked = s.verifySsl !== false;
+          $("#setting-encode-url").checked = s.encodeUrl !== false;
+
+          if (r.requestId) {
+            var li = tree.querySelector('.request-item[data-request-id="' + r.requestId + '"]');
+            if (li) {
+              $$(".request-item.active", tree).forEach(function (x) { x.classList.remove("active"); });
+              li.classList.add("active");
+              lastFolderId = li.dataset.folderId;
+            }
+          }
+          syncing = false;
+          updateBadges();
+        }
+
+        function clearRequest() { setRequest({}); }
+
+        /* ---------------------------------------------------------------- *
+         *  değişiklik bildirimi (otomatik kayıt için)
+         * ---------------------------------------------------------------- */
+        var changeTimer = null;
+        function markChanged() {
+          updateBadges();
+          clearTimeout(changeTimer);
+          changeTimer = setTimeout(function () { emit("putman:request-changed", getRequest()); }, 300);
+        }
+
+        wireKv(paramsBody, function () { paramsToUrl(); markChanged(); });
+        wireKv(headersBody, markChanged);
+        wireKv(bodyFormTb, markChanged);
+
+        $("#btn-add-param").addEventListener("click", function () { paramsBody.appendChild(makeRow({})); });
+        $("#btn-add-header").addEventListener("click", function () { headersBody.appendChild(makeRow({})); });
+        $("#btn-add-body-field").addEventListener("click", function () { bodyFormTb.appendChild(makeRow({})); });
+
+        urlInput.addEventListener("change", urlToParams);
+        urlInput.addEventListener("blur", urlToParams);
+
+        [
+          "#req-name", "#req-description", "#url-input", "#body-text",
+          "#auth-bearer-token", "#auth-basic-user", "#auth-basic-pass",
+          "#auth-apikey-key", "#auth-apikey-value", "#auth-apikey-in",
+          "#setting-timeout", "#setting-max-redirects", "#setting-follow-redirects",
+          "#setting-verify-ssl", "#setting-encode-url"
+        ].forEach(function (sel) {
+          var el = $(sel);
+          var evt = el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input";
+          el.addEventListener(evt, markChanged);
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  toast + kısayollar
+         * ---------------------------------------------------------------- */
+        var toastEl = $("#toast");
+        var toastTimer = null;
+        function toast(text) {
+          toastEl.textContent = text;
+          toastEl.classList.add("show");
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1900);
+        }
+
+        document.addEventListener("keydown", function (e) {
+          var mod = e.ctrlKey || e.metaKey;
+          if (mod && e.key === "Enter") { e.preventDefault(); $("#request-form").requestSubmit(); }
+          if (mod && e.key.toLowerCase() === "l") { e.preventDefault(); urlInput.focus(); urlInput.select(); }
+          if (e.key === "Escape" && !respPanel.hidden) closeResponse();
+        });
+
+        /* ---------------------------------------------------------------- *
+         *  dışa açılan API
+         * ---------------------------------------------------------------- */
+        window.PutmanUI = {
+          getRequest: getRequest,
+          setRequest: setRequest,
+          clearRequest: clearRequest,
+
+          setResponse: setResponse,
+          setLoading: setLoading,
+          openResponse: openResponse,
+          closeResponse: closeResponse,
+          toggleResponse: toggleResponse,
+
+          setCollections: function (list) {
+            tree.innerHTML = "";
+            (list || []).forEach(function (f) { tree.appendChild(folderEl(f)); });
+            lastFolderId = list && list.length ? list[list.length - 1].id : null;
+            renderTreeEmptyState();
+          },
+          addFolder: addFolder,
+          addRequest: addRequest,
+          removeFolder: function (id) {
+            var f = tree.querySelector('.folder[data-folder-id="' + id + '"]');
+            if (f) f.remove();
+            renderTreeEmptyState();
+          },
+          removeRequest: function (id) {
+            var r = tree.querySelector('.request-item[data-request-id="' + id + '"]');
+            if (r) r.remove();
+          },
+          selectRequest: selectRequest,
+          clearCollections: function () {
+            tree.innerHTML = "";
+            lastFolderId = null;
+            renderTreeEmptyState();
+          },
+
+          setHistory: function (list) {
+            historyList.innerHTML = "";
+            (list || []).forEach(function (h) {
+              h.id = h.id || uid("h");
+              historyList.appendChild(historyEl(h));
+            });
+          },
+          addHistory: addHistory,
+          clearHistory: function () { historyList.innerHTML = ""; },
+
+          setStatus: setStatus,
+          toast: toast
+        };
+
+        /* ---------------------------------------------------------------- *
+         *  DEMO içerik — kendi verini bağlarken burayı sil
+         * ---------------------------------------------------------------- */
+        window.PutmanUI.setCollections([
+          {
+            id: "demo-f1",
+            name: "Kullanıcılar",
+            open: true,
+            requests: [
+              { id: "demo-r1", name: "Listele", method: "GET" },
+              { id: "demo-r2", name: "Oluştur", method: "POST" },
+              { id: "demo-r3", name: "Güncelle", method: "PUT" },
+              { id: "demo-r4", name: "Sil", method: "DELETE" }
+            ]
+          },
+          {
+            id: "demo-f2",
+            name: "Kimlik",
+            open: false,
+            requests: [
+              { id: "demo-r5", name: "Giriş", method: "POST" },
+              { id: "demo-r6", name: "Token yenile", method: "POST" }
+            ]
+          }
+        ]);
+        window.PutmanUI.setHistory([
+          { id: "demo-h1", method: "GET", url: "https://api.ornek.com/v1/kullanicilar", status: 200, timeMs: 142 },
+          { id: "demo-h2", method: "POST", url: "https://api.ornek.com/v1/oturum", status: 401, timeMs: 89 },
+          { id: "demo-h3", method: "GET", url: "https://api.ornek.com/v1/saglik", status: 200, timeMs: 31 }
+        ]);
+
+        applyMethodColor();
+        applyAuthType();
+        applyBodyType();
+        updateBadges();
+        setStatus("Hazır");
+      })();
+    </script>
   </body>
 </html>
