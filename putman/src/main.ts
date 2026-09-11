@@ -228,3 +228,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   window.PutmanUI.setStatus("Hazır", "ok");
 });
+
+//link değişmesine ve linkdeki parametreler silinmesine rağmen parametre kısmında parametreler kaldı.
+//name parametresi ile linke gidildiğinde hata verdi
+//Header yok, her yer kabul etmez.
+//Her cevapta görünen json sıraları değişiyor. Alfabetik sıralansa daha iyi olur.
